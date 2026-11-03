@@ -28,6 +28,9 @@ If your PC doesn't show up, tap the refresh button, or type the IP address shown
 
 To disconnect, tap the green status chip at the top of the phone screen.
 
+### Playing with friends
+Up to 4 phones can connect to the same PC. Each one follows Step 3 and becomes its own Xbox controller, with its own vibration. The PC app lists each connected controller under **Live input**. A fifth phone will still look connected on its own screen, but its input is ignored until someone else disconnects.
+
 ## Controls
 - **Sticks:** touch anywhere in the stick area and drag. Tap again quickly after letting go to press the stick in (L3/R3).
 - **Triggers (LT / RT):** press for full pull. Slide your finger upward to ease off.
@@ -49,4 +52,4 @@ To disconnect, tap the green status chip at the top of the phone screen.
   cd windows/hype.xbox
   dotnet publish -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true
   ```
-- Protocol: UDP, little-endian. State on port 39500 (20-byte packets, `HX` magic), discovery on 39501, rumble returned on the state socket. See `app/src/main/java/com/xbox/hype/net/Protocol.kt` and `windows/hype.xbox/Protocol.cs`.
+- Protocol: UDP, little-endian. State on port 39500 (20-byte packets, `HX` magic), discovery on 39501, rumble returned on the state socket. The server gives each source endpoint its own virtual pad, so the protocol has no pairing step. See `app/src/main/java/com/xbox/hype/net/Protocol.kt` and `windows/hype.xbox/Protocol.cs`.

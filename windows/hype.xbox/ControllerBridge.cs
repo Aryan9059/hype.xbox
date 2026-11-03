@@ -4,9 +4,12 @@ using Nefarius.ViGEm.Client.Targets.Xbox360;
 
 namespace HypeXboxServer;
 
-/// <summary>Owns the virtual Xbox 360 pad and applies phone state to it.</summary>
+/// <summary>Owns the virtual Xbox 360 pads, one per slot, and applies phone state to them.</summary>
 public sealed class ControllerBridge : IDisposable
 {
+    /// <summary>XInput only exposes four controllers, so more would be invisible to most games.</summary>
+    public const int MaxPads = 4;
+
     private static readonly (ushort Mask, Xbox360Button Button)[] Map =
     {
         (Btn.Up, Xbox360Button.Up), (Btn.Down, Xbox360Button.Down),
@@ -20,41 +23,79 @@ public sealed class ControllerBridge : IDisposable
     };
 
     private readonly ViGEmClient _client;
-    private readonly IXbox360Controller _pad;
+    private readonly IXbox360Controller?[] _pads = new IXbox360Controller?[MaxPads];
     private readonly object _gate = new();
 
-    /// <summary>Raised from a driver thread with (largeMotor, smallMotor).</summary>
-    public event Action<byte, byte>? Rumble;
+    /// <summary>Raised from a driver thread with (slot, largeMotor, smallMotor). Handlers must not wait on a lock
+    /// held around <see cref="Unplug"/>, since removing a pad may wait for its feedback thread.</summary>
+    public event Action<int, byte, byte>? Rumble;
 
     public ControllerBridge()
     {
         _client = new ViGEmClient(); // throws VigemBusNotFoundException when the driver is missing
-        _pad = _client.CreateXbox360Controller();
-        _pad.AutoSubmitReport = false;
-        _pad.FeedbackReceived += (_, e) => Rumble?.Invoke(e.LargeMotor, e.SmallMotor);
-        _pad.Connect();
-        Apply(default);
+        Plug(0); // the first pad is always present so games see it before a phone joins
     }
 
-    public void Apply(PadState s)
+    /// <summary>Plugs in the slot's pad if it is not already there.</summary>
+    public void Plug(int slot)
     {
         lock (_gate)
         {
-            foreach (var (mask, button) in Map)
-                _pad.SetButtonState(button, (s.Buttons & mask) != 0);
-            _pad.SetSliderValue(Xbox360Slider.LeftTrigger, s.LeftTrigger);
-            _pad.SetSliderValue(Xbox360Slider.RightTrigger, s.RightTrigger);
-            _pad.SetAxisValue(Xbox360Axis.LeftThumbX, s.LX);
-            _pad.SetAxisValue(Xbox360Axis.LeftThumbY, s.LY);
-            _pad.SetAxisValue(Xbox360Axis.RightThumbX, s.RX);
-            _pad.SetAxisValue(Xbox360Axis.RightThumbY, s.RY);
-            _pad.SubmitReport();
+            if (_pads[slot] != null) return;
+            var pad = _client.CreateXbox360Controller();
+            pad.AutoSubmitReport = false;
+            pad.FeedbackReceived += (_, e) => Rumble?.Invoke(slot, e.LargeMotor, e.SmallMotor);
+            pad.Connect();
+            _pads[slot] = pad;
+            Apply(slot, default);
         }
+    }
+
+    public void Unplug(int slot)
+    {
+        lock (_gate)
+        {
+            var pad = _pads[slot];
+            if (pad == null) return;
+            _pads[slot] = null;
+            Remove(pad);
+        }
+    }
+
+    public void Apply(int slot, PadState s)
+    {
+        lock (_gate)
+        {
+            var pad = _pads[slot];
+            if (pad == null) return;
+            foreach (var (mask, button) in Map)
+                pad.SetButtonState(button, (s.Buttons & mask) != 0);
+            pad.SetSliderValue(Xbox360Slider.LeftTrigger, s.LeftTrigger);
+            pad.SetSliderValue(Xbox360Slider.RightTrigger, s.RightTrigger);
+            pad.SetAxisValue(Xbox360Axis.LeftThumbX, s.LX);
+            pad.SetAxisValue(Xbox360Axis.LeftThumbY, s.LY);
+            pad.SetAxisValue(Xbox360Axis.RightThumbX, s.RX);
+            pad.SetAxisValue(Xbox360Axis.RightThumbY, s.RY);
+            pad.SubmitReport();
+        }
+    }
+
+    private static void Remove(IXbox360Controller pad)
+    {
+        try { pad.Disconnect(); } catch { }
+        (pad as IDisposable)?.Dispose();
     }
 
     public void Dispose()
     {
-        try { _pad.Disconnect(); } catch { }
-        _client.Dispose();
+        lock (_gate)
+        {
+            for (var i = 0; i < _pads.Length; i++)
+            {
+                if (_pads[i] is { } pad) Remove(pad);
+                _pads[i] = null;
+            }
+            _client.Dispose();
+        }
     }
 }

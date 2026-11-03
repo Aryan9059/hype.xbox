@@ -14,6 +14,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.net.NetworkInterface
 import java.net.SocketTimeoutException
 
 data class DiscoveredPc(val name: String, val host: String)
@@ -58,9 +59,21 @@ class ControllerClient(
         val sock = open()
         jobs += scope.launch(Dispatchers.IO) {
             val probe = Protocol.encodeDiscover()
-            val broadcast = InetAddress.getByName("255.255.255.255")
+            val limited = InetAddress.getByName("255.255.255.255")
             while (isActive) {
-                runCatching { sock.send(DatagramPacket(probe, probe.size, broadcast, Protocol.DISCOVERY_PORT)) }
+                // 255.255.255.255 only leaves via the default network, so also probe each
+                // interface's own broadcast address (Wi-Fi and the USB tether subnet).
+                val targets = buildList {
+                    add(limited)
+                    runCatching {
+                        NetworkInterface.getNetworkInterfaces()?.toList().orEmpty()
+                            .filter { it.isUp && !it.isLoopback }
+                            .forEach { nic -> nic.interfaceAddresses.mapNotNullTo(this) { it.broadcast } }
+                    }
+                }.distinct()
+                for (target in targets) {
+                    runCatching { sock.send(DatagramPacket(probe, probe.size, target, Protocol.DISCOVERY_PORT)) }
+                }
                 delay(1000)
             }
         }

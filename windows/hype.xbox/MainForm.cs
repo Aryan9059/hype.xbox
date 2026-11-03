@@ -1,6 +1,8 @@
 using System.Diagnostics;
+using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
+using System.Numerics;
 using Microsoft.Win32;
 
 namespace HypeXboxServer;
@@ -12,6 +14,9 @@ public sealed class MainForm : Form
 
     private enum Status { Waiting, Connected, Error }
 
+    /// <summary>One controller's caption and live view in the input card.</summary>
+    private sealed record Tile(FlowLayoutPanel Panel, Label Caption, InputView View);
+
     private readonly BrandHeader _header = new();
     private readonly Dot _dot = new() { Margin = new Padding(0, 0, 10, 0), Anchor = AnchorStyles.Left };
     private readonly Label _statusTitle = new() { AutoSize = true, Font = Theme.Display(15, FontStyle.Bold), BackColor = Color.Transparent };
@@ -19,7 +24,9 @@ public sealed class MainForm : Form
     private readonly FluentButton _action = new() { Primary = true, Visible = false, Anchor = AnchorStyles.Right };
     private readonly TableLayoutPanel _ipRows = new() { AutoSize = true, ColumnCount = 1, Dock = DockStyle.Fill, BackColor = Color.Transparent };
     private readonly Label _hint;
-    private readonly InputView _view = new() { Margin = new Padding(0, 10, 0, 0), Anchor = AnchorStyles.None };
+    private readonly TableLayoutPanel _tileGrid = new() { AutoSize = true, ColumnCount = 2, RowCount = 2, BackColor = Color.Transparent, Margin = new Padding(0) };
+    private readonly Tile[] _tiles = new Tile[ControllerBridge.MaxPads];
+    private int _shownSlots; // bitmask of the slots whose tile is showing
     private readonly Clip _reveal = new();
     private readonly List<Action> _themers = new();
     private readonly List<CardPanel> _cards = new();
@@ -31,11 +38,9 @@ public sealed class MainForm : Form
     private readonly System.Windows.Forms.Timer _ui = new() { Interval = 500 };
     private readonly System.Windows.Forms.Timer _anim = new() { Interval = 15 };
     private readonly Stopwatch _clock = Stopwatch.StartNew();
-    private readonly object _padLock = new();
 
     private ControllerBridge? _bridge;
     private UdpServer? _server;
-    private PadState _pad;
     private Status _status = Status.Waiting;
     private Action? _actionClick;
 
@@ -56,7 +61,7 @@ public sealed class MainForm : Form
         Font = Theme.Body();
         Icon = TryAppIcon();
 
-        _hint = Caption("Your phone finds this PC automatically. If it does not, enter one of these addresses in the app.");
+        _hint = Caption($"Your phone finds this PC automatically. If it does not, enter one of these addresses in the app. Up to {ControllerBridge.MaxPads} phones can connect, each as its own controller.");
         _hint.Margin = new Padding(0, 0, 0, 10);
 
         _statusCard = BuildStatusCard();
@@ -113,7 +118,19 @@ public sealed class MainForm : Form
     {
         int pad = S(16), gap = S(12), cw = S(500) - 2 * pad, inner = cw - S(36);
         _hint.MaximumSize = new Size(inner, 0);
-        _view.Size = new Size(inner, (int)(inner * 168f / 432f));
+        // One controller gets the full width; several share a two-column grid so the window stays on screen.
+        var tileGap = S(12);
+        var tileW = BitOperations.PopCount((uint)_shownSlots) > 1 ? (inner - tileGap) / 2 : inner;
+        var shown = 0;
+        for (var i = 0; i < _tiles.Length; i++)
+        {
+            var tile = _tiles[i];
+            tile.View.Size = new Size(tileW, (int)(tileW * 168f / 432f));
+            tile.Caption.MaximumSize = new Size(tileW, 0);
+            if ((_shownSlots & (1 << i)) == 0) continue;
+            tile.Panel.Margin = new Padding(0, S(8), shown % 2 == 0 && tileW < inner ? tileGap : 0, 0);
+            shown++;
+        }
         _statusSub.MaximumSize = new Size(inner - S(54) - (_action.Visible ? _action.Width + S(8) : 0), 0);
 
         var contentH = _inputCard.FitHeight(cw);
@@ -176,9 +193,41 @@ public sealed class MainForm : Form
         var card = NewCard();
         var stack = new TableLayoutPanel { AutoSize = true, ColumnCount = 1, Dock = DockStyle.Fill, BackColor = Color.Transparent };
         stack.Controls.Add(Heading("Live input"));
-        stack.Controls.Add(_view);
+        for (var i = 0; i < _tiles.Length; i++)
+        {
+            var panel = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false, BackColor = Color.Transparent, Visible = false };
+            var caption = Caption("", 8.5f);
+            caption.Margin = new Padding(0);
+            var view = new InputView { Margin = new Padding(0, 6, 0, 0) };
+            panel.Controls.Add(caption);
+            panel.Controls.Add(view);
+            _tileGrid.Controls.Add(panel);
+            _tiles[i] = new Tile(panel, caption, view);
+        }
+        stack.Controls.Add(_tileGrid);
         card.Controls.Add(stack);
         return card;
+    }
+
+    /// <summary>Shows a tile per connected phone, filling the grid in slot order.</summary>
+    private void ShowTiles(List<(int Slot, IPEndPoint Phone)> phones)
+    {
+        var slots = 0;
+        foreach (var (slot, phone) in phones)
+        {
+            slots |= 1 << slot;
+            _tiles[slot].Caption.Text = $"Controller {slot + 1}  ·  {phone.Address}";
+        }
+        if (slots == _shownSlots) return;
+        _shownSlots = slots;
+
+        _tileGrid.SuspendLayout();
+        for (var i = 0; i < _tiles.Length; i++)
+            _tiles[i].Panel.Visible = (slots & (1 << i)) != 0;
+        for (var i = 0; i < phones.Count; i++)
+            _tileGrid.SetCellPosition(_tiles[phones[i].Slot].Panel, new TableLayoutPanelCellPosition(i % 2, i / 2));
+        _tileGrid.ResumeLayout();
+        LayoutRoot();
     }
 
     private void AddAddressRow(string name, string ip)
@@ -312,11 +361,14 @@ public sealed class MainForm : Form
         if (open != _open) { _open = open; layout = true; }
         if (layout) LayoutRoot();
 
-        if (_open > 0f)
+        if (_open > 0f && _server != null)
         {
-            PadState pad;
-            lock (_padLock) pad = _pad;
-            _view.Step(dt, pad);
+            for (var i = 0; i < _tiles.Length; i++)
+            {
+                if ((_shownSlots & (1 << i)) == 0) continue;
+                _server.TryGetPhone(i, out _, out var pad); // a free slot reads as released, so the view settles
+                _tiles[i].View.Step(dt, pad);
+            }
         }
     }
 
@@ -330,7 +382,6 @@ public sealed class MainForm : Form
         {
             _bridge = new ControllerBridge();
             _server = new UdpServer(_bridge);
-            _server.StateReceived += s => { lock (_padLock) _pad = s; };
             _server.Start();
         }
         catch (Nefarius.ViGEm.Client.Exceptions.VigemBusNotFoundException)
@@ -351,12 +402,20 @@ public sealed class MainForm : Form
     private void RefreshUi()
     {
         if (_server == null) return;
-        var phone = _server.Phone;
+        var phones = new List<(int Slot, IPEndPoint Phone)>();
+        for (var i = 0; i < _tiles.Length; i++)
+            if (_server.TryGetPhone(i, out var phone, out _)) phones.Add((i, phone));
         var pps = _server.TakePacketCount() * 2; // timer is 500 ms
-        if (phone == null)
+
+        if (phones.Count == 0)
+        {
+            // The tiles stay as they are while the card slides shut.
             SetStatus(Status.Waiting, "Waiting for phone", $"Open the {AppName} app on the same Wi-Fi network.");
-        else
-            SetStatus(Status.Connected, "Connected", $"{phone.Address}  ·  {pps} packets/sec");
+            return;
+        }
+        ShowTiles(phones);
+        var who = phones.Count == 1 ? phones[0].Phone.Address.ToString() : $"{phones.Count} phones";
+        SetStatus(Status.Connected, "Connected", $"{who}  ·  {pps} packets/sec");
     }
 
     private static IEnumerable<(string Name, string Ip)> LocalAddresses() =>
