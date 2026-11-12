@@ -77,3 +77,39 @@ fun RevealHost(
         }
     }
 }
+
+private class PointRevealShape(private val progress: Float, private val origin: Offset) : Shape {
+    override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline {
+        val full = maxOf(
+            hypot(origin.x, origin.y),
+            hypot(size.width - origin.x, origin.y),
+            hypot(origin.x, size.height - origin.y),
+            hypot(size.width - origin.x, size.height - origin.y),
+        )
+        val r = (full * progress).coerceAtLeast(0f)
+        return Outline.Generic(Path().apply { addOval(androidx.compose.ui.geometry.Rect(origin, r)) })
+    }
+}
+
+/** A full-screen layer that springs open from [origin] (px) when [visible], and shut back into it. */
+@Composable
+fun RevealLayer(
+    visible: Boolean,
+    origin: Offset,
+    content: @Composable () -> Unit,
+) {
+    val progress = remember { Animatable(0f) }
+    val lastOrigin = remember { arrayOf(origin) }
+    if (visible) lastOrigin[0] = origin
+    LaunchedEffect(visible) {
+        progress.animateTo(if (visible) 1f else 0f, spring(dampingRatio = 0.8f, stiffness = 160f))
+    }
+    if (visible || progress.value > 0f) {
+        Box(
+            Modifier.fillMaxSize().graphicsLayer {
+                shape = PointRevealShape(progress.value, lastOrigin[0])
+                clip = true
+            },
+        ) { content() }
+    }
+}

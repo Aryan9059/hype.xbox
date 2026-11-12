@@ -10,7 +10,17 @@ import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import com.xbox.hype.settings.AppSettings
+import com.xbox.hype.settings.LocalVibrationEnabled
+import com.xbox.hype.ui.LayoutEditorScreen
+import com.xbox.hype.ui.SettingsScreen
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.core.view.WindowCompat
@@ -23,11 +33,14 @@ import com.xbox.hype.net.ControllerClient
 import com.xbox.hype.ui.ConnectScreen
 import com.xbox.hype.ui.ControllerScreen
 import com.xbox.hype.ui.RevealHost
+import com.xbox.hype.ui.RevealLayer
+import androidx.compose.ui.geometry.Offset
 import com.xbox.hype.ui.theme.HypexboxTheme
 
 class MainActivity : ComponentActivity() {
     private lateinit var client: ControllerClient
     private lateinit var pad: ControllerState
+    private lateinit var settings: AppSettings
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -38,32 +51,52 @@ class MainActivity : ComponentActivity() {
         client = ControllerClient(lifecycleScope, ::rumble)
         pad = ControllerState { client.update(it) }
         val prefs = getSharedPreferences("hype", Context.MODE_PRIVATE)
+        settings = AppSettings(prefs)
 
         setContent {
             HypexboxTheme(darkTheme = true, dynamicColor = false) {
-                val status by client.status.collectAsState()
-                val discovered by client.discovered.collectAsState()
-                val connected = status as? ConnectionStatus.Connected
-                RevealHost(
-                    host = connected?.host,
-                    connect = {
-                        ConnectScreen(
-                            discovered = discovered,
-                            lastHost = remember { prefs.getString("host", "") ?: "" },
-                            onConnect = { host ->
-                                prefs.edit().putString("host", host).apply()
-                                client.connect(host)
+                CompositionLocalProvider(LocalVibrationEnabled provides settings.vibration) {
+                    var settingsOpen by remember { mutableStateOf(false) }
+                    var layoutOpen by remember { mutableStateOf(false) }
+                    var settingsOrigin by remember { mutableStateOf(Offset.Zero) }
+                    var layoutOrigin by remember { mutableStateOf(Offset.Zero) }
+                    val status by client.status.collectAsState()
+                    val discovered by client.discovered.collectAsState()
+                    val connected = status as? ConnectionStatus.Connected
+                    Box(Modifier.fillMaxSize()) {
+                        RevealHost(
+                            host = connected?.host,
+                            connect = {
+                                ConnectScreen(
+                                    discovered = discovered,
+                                    lastHost = remember { prefs.getString("host", "") ?: "" },
+                                    onConnect = { host ->
+                                        prefs.edit().putString("host", host).apply()
+                                        client.connect(host)
+                                    },
+                                    onRescan = client::startDiscovery,
+                                    onOpenSettings = { settingsOrigin = it; settingsOpen = true },
+                                )
                             },
-                            onRescan = client::startDiscovery,
+                            controller = { host ->
+                                ControllerScreen(pad, host, settings) {
+                                    pad.reset()
+                                    client.startDiscovery()
+                                }
+                            },
                         )
-                    },
-                    controller = { host ->
-                        ControllerScreen(pad, host) {
-                            pad.reset()
-                            client.startDiscovery()
+                        RevealLayer(settingsOpen, settingsOrigin) {
+                            SettingsScreen(
+                                settings,
+                                onEditLayout = { layoutOrigin = it; layoutOpen = true },
+                                onBack = { settingsOpen = false },
+                            )
                         }
-                    },
-                )
+                        RevealLayer(layoutOpen, layoutOrigin) {
+                            LayoutEditorScreen(settings, onDone = { layoutOpen = false })
+                        }
+                    }
+                }
             }
         }
         client.startDiscovery()
@@ -107,6 +140,10 @@ class MainActivity : ComponentActivity() {
             (getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager).defaultVibrator
         else
             @Suppress("DEPRECATION") getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+        if (!settings.vibration) {
+            vibrator.cancel()
+            return
+        }
         val strength = maxOf(large, small)
         if (strength == 0) vibrator.cancel()
         else vibrator.vibrate(VibrationEffect.createOneShot(120, strength.coerceIn(1, 255)))

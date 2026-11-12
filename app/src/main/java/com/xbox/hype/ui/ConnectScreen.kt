@@ -10,6 +10,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.foundation.background
@@ -66,10 +68,12 @@ fun ConnectScreen(
     lastHost: String,
     onConnect: (String) -> Unit,
     onRescan: () -> Unit,
+    onOpenSettings: (androidx.compose.ui.geometry.Offset) -> Unit,
 ) {
     var manual by remember { mutableStateOf(lastHost) }
+    Box(Modifier.fillMaxSize().background(Color.Black)) {
     Row(
-        Modifier.fillMaxSize().background(Color.Black).displayCutoutPadding().padding(20.dp),
+        Modifier.fillMaxSize().displayCutoutPadding().padding(20.dp),
         horizontalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         SectionCard("Nearby PCs", Modifier.weight(1f).fillMaxHeight(), action = {
@@ -139,6 +143,14 @@ fun ConnectScreen(
                 modifier = Modifier.fillMaxWidth().height(48.dp),
             ) { Text("Connect") }
         }
+    }
+    var gearCenter = Offset.Zero
+    Box(
+        Modifier.align(Alignment.TopEnd).displayCutoutPadding().padding(12.dp).size(44.dp)
+            .onGloballyPositioned { gearCenter = it.positionInRoot() + Offset(it.size.width / 2f, it.size.height / 2f) }
+            .clip(CircleShape).background(CardFill).clickable { onOpenSettings(gearCenter) },
+        contentAlignment = Alignment.Center,
+    ) { Text("⚙", color = Palette.XboxGreenBright, fontSize = 22.sp) }
     }
 }
 

@@ -14,6 +14,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import com.xbox.hype.settings.LocalVibrationEnabled
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -125,6 +127,7 @@ fun HoldButton(
         label = "press",
     )
     val view = LocalView.current
+    val vib by rememberUpdatedState(LocalVibrationEnabled.current)
     Box(
         modifier = modifier
             .size(size)
@@ -156,7 +159,7 @@ fun HoldButton(
                 awaitEachGesture {
                     awaitFirstDown(requireUnconsumed = false).consume()
                     pressed = true
-                    view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                    if (vib) view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
                     onChange(true)
                     do {
                         val e = awaitPointerEvent(PointerEventPass.Main)
@@ -183,6 +186,7 @@ fun TriggerButton(
     var target by remember { mutableStateOf(0f) }
     val value by animateFloatAsState(target, tween(70), label = "trigger")
     val view = LocalView.current
+    val vib by rememberUpdatedState(LocalVibrationEnabled.current)
     Box(
         modifier = modifier
             .size(width = 130.dp, height = if (analog) 72.dp else 52.dp)
@@ -214,7 +218,7 @@ fun TriggerButton(
             .pointerInput(Unit) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
-                    view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                    if (vib) view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
                     val startY = down.position.y
                     val range = 90.dp.toPx()
                     fun apply(y: Float) {
@@ -323,6 +327,7 @@ fun DPad(
 ) {
     var bits by remember { mutableStateOf(0) }
     val view = LocalView.current
+    val vib by rememberUpdatedState(LocalVibrationEnabled.current)
     fun lit(mask: Int) = if (bits and mask != 0) 1f else 0f
     val litUp by animateFloatAsState(lit(Buttons.DPAD_UP), tween(90), label = "up")
     val litDown by animateFloatAsState(lit(Buttons.DPAD_DOWN), tween(90), label = "down")
@@ -357,7 +362,7 @@ fun DPad(
                     trackPointer { c ->
                         val next = bitsFor(c.position, center)
                         if (next != bits) {
-                            if (next != 0) view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                            if (next != 0) if (vib) view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
                             bits = next
                             onChange(next)
                         }
